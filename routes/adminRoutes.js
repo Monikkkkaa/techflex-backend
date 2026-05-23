@@ -4,7 +4,7 @@ const nodemailer = require("nodemailer");
 
 let admin = {
   name: "Techflex Admin",
-  email: "monikapatidar1009@gmail.com",
+  email: "techflex.plasto@gmail.com",
   password: "Techflex@123",
   resetOtp: null,
   otpExpire: null,
