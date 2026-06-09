@@ -1,45 +1,100 @@
 const express = require("express");
-const mongoose = require("mongoose");
+const mysql = require("mysql2/promise");
 const cors = require("cors");
 const adminRoutes = require("./routes/adminRoutes");
 require("dotenv").config();
 
 const app = express();
+let db;
 
 app.use(cors());
 app.use(express.json());
 app.use("/api/admin", adminRoutes);
 
-mongoose
-  .connect(process.env.MONGO_URI)
-  .then(() => console.log("MongoDB connected"))
-  .catch((err) => console.log("MongoDB error:", err));
+async function connectDB() {
+  const dbName = process.env.DB_NAME || "techflex";
+  const safeDbName = dbName.replace(/`/g, "``");
+  const setupConnection = await mysql.createConnection({
+    host: process.env.DB_HOST || "localhost",
+    user: process.env.DB_USER || "root",
+    password: process.env.DB_PASSWORD || "",
+    port: Number(process.env.DB_PORT) || 3306,
+  });
 
-const contactSchema = new mongoose.Schema(
-  {
-    name: String,
-    company: String,
-    email: String,
-    phone: String,
-    interest: String,
-    message: String,
-    status: {
-      type: String,
-      default: "New",
-    },
-  },
-  { timestamps: true }
-);
+  await setupConnection.query(`CREATE DATABASE IF NOT EXISTS \`${safeDbName}\``);
+  await setupConnection.end();
 
-const Contact = mongoose.model("Contact", contactSchema);
+  db = mysql.createPool({
+    host: process.env.DB_HOST || "localhost",
+    user: process.env.DB_USER || "root",
+    password: process.env.DB_PASSWORD || "",
+    database: dbName,
+    port: Number(process.env.DB_PORT) || 3306,
+    waitForConnections: true,
+    connectionLimit: 10,
+  });
+
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS contacts (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      name VARCHAR(255),
+      company VARCHAR(255),
+      email VARCHAR(255),
+      phone VARCHAR(50),
+      interest VARCHAR(255),
+      message TEXT,
+      status VARCHAR(50) NOT NULL DEFAULT 'New',
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    )
+  `);
+
+  console.log("MySQL connected");
+}
+
+function mapContact(row) {
+  return {
+    _id: row.id,
+    id: row.id,
+    name: row.name,
+    company: row.company,
+    email: row.email,
+    phone: row.phone,
+    interest: row.interest,
+    message: row.message,
+    status: row.status,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
 
 app.post("/api/contact", async (req, res) => {
   try {
-    const contact = await Contact.create(req.body);
+    const {
+      name = null,
+      company = null,
+      email = null,
+      phone = null,
+      interest = null,
+      message = null,
+      status = "New",
+    } = req.body;
+
+    const [result] = await db.execute(
+      `INSERT INTO contacts
+       (name, company, email, phone, interest, message, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [name, company, email, phone, interest, message, status]
+    );
+
+    const [rows] = await db.execute("SELECT * FROM contacts WHERE id = ?", [
+      result.insertId,
+    ]);
+
     res.status(201).json({
       success: true,
       message: "Inquiry submitted successfully",
-      data: contact,
+      data: mapContact(rows[0]),
     });
   } catch (error) {
     res.status(500).json({
@@ -51,10 +106,13 @@ app.post("/api/contact", async (req, res) => {
 
 app.get("/api/contact", async (req, res) => {
   try {
-    const contacts = await Contact.find().sort({ createdAt: -1 });
+    const [contacts] = await db.execute(
+      "SELECT * FROM contacts ORDER BY created_at DESC"
+    );
+
     res.json({
       success: true,
-      data: contacts,
+      data: contacts.map(mapContact),
     });
   } catch (error) {
     res.status(500).json({
@@ -66,7 +124,8 @@ app.get("/api/contact", async (req, res) => {
 
 app.delete("/api/contact/:id", async (req, res) => {
   try {
-    await Contact.findByIdAndDelete(req.params.id);
+    await db.execute("DELETE FROM contacts WHERE id = ?", [req.params.id]);
+
     res.json({
       success: true,
       message: "Inquiry deleted",
@@ -81,15 +140,18 @@ app.delete("/api/contact/:id", async (req, res) => {
 
 app.patch("/api/contact/:id/status", async (req, res) => {
   try {
-    const contact = await Contact.findByIdAndUpdate(
+    await db.execute("UPDATE contacts SET status = ? WHERE id = ?", [
+      req.body.status,
       req.params.id,
-      { status: req.body.status },
-      { new: true }
-    );
+    ]);
+
+    const [rows] = await db.execute("SELECT * FROM contacts WHERE id = ?", [
+      req.params.id,
+    ]);
 
     res.json({
       success: true,
-      data: contact,
+      data: rows[0] ? mapContact(rows[0]) : null,
     });
   } catch (error) {
     res.status(500).json({
@@ -105,6 +167,13 @@ app.get("/", (req, res) => {
 
 const PORT = process.env.PORT || 5000;
 
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-});
+connectDB()
+  .then(() => {
+    app.listen(PORT, () => {
+      console.log(`Server running on port ${PORT}`);
+    });
+  })
+  .catch((err) => {
+    console.log("MySQL error:", err);
+    process.exit(1);
+  });
